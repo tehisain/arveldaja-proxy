@@ -812,13 +812,135 @@
         }
 
         .accounts-content {
-            max-height: 500px;
+            max-height: 600px;
             overflow: auto;
             transition: max-height 0.3s ease-out;
         }
 
         .accounts-section.collapsed .accounts-content {
             max-height: 0;
+        }
+
+        .accounts-controls {
+            padding: 15px;
+            background: #f8f9fa;
+            border-bottom: 1px solid #e9ecef;
+        }
+
+        .accounts-controls-row {
+            display: flex;
+            gap: 15px;
+            align-items: center;
+            flex-wrap: wrap;
+            margin-bottom: 10px;
+        }
+
+        .accounts-controls-row:last-child {
+            margin-bottom: 0;
+        }
+
+        .accounts-controls label {
+            font-size: 12px;
+            color: #666;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .accounts-controls input[type="date"] {
+            padding: 6px 10px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 13px;
+        }
+
+        .accounts-controls .quick-select {
+            display: flex;
+            gap: 6px;
+        }
+
+        .accounts-controls .quick-select button {
+            padding: 5px 12px;
+            border: 1px solid #ddd;
+            background: white;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 12px;
+            transition: all 0.2s;
+        }
+
+        .accounts-controls .quick-select button:hover {
+            background: #f0f0f0;
+        }
+
+        .accounts-controls .quick-select button.active {
+            background: #1a365d;
+            color: white;
+            border-color: #1a365d;
+        }
+
+        .accounts-controls .checkbox-label {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            cursor: pointer;
+            font-size: 13px;
+            color: #333;
+            text-transform: none;
+        }
+
+        .accounts-controls .checkbox-label input[type="checkbox"] {
+            cursor: pointer;
+        }
+
+        .accounts-summary {
+            padding: 10px 15px;
+            background: #f0f7ff;
+            border-bottom: 1px solid #e9ecef;
+            font-size: 13px;
+            color: #1a365d;
+        }
+
+        .accounts-table .balance-cell {
+            text-align: right;
+            font-family: 'Monaco', monospace;
+        }
+
+        .accounts-table .balance-zero {
+            color: #999;
+        }
+
+        .accounts-table .balance-positive {
+            color: #38a169;
+        }
+
+        .accounts-table .balance-negative {
+            color: #e53e3e;
+        }
+
+        .accounts-table .expand-btn {
+            background: none;
+            border: none;
+            cursor: pointer;
+            padding: 0 5px;
+            font-size: 10px;
+            color: #666;
+            transition: color 0.2s;
+        }
+
+        .accounts-table .expand-btn:hover {
+            color: #1a365d;
+        }
+
+        .accounts-table tr.account-row {
+            background: white;
+        }
+
+        .accounts-table tr.dimension-row {
+            background: #f8f9fa;
+        }
+
+        .accounts-table tr.dimension-row td {
+            border-bottom: 1px solid #e9ecef;
         }
 
         .accounts-table {
@@ -888,11 +1010,33 @@
 
         <div class="accounts-section collapsed" id="accounts-section">
             <h3 onclick="toggleAccounts()">
-                Chart of Accounts
+                Chart of Accounts with Balances
                 <span class="toggle-icon">▼</span>
             </h3>
             <div class="accounts-content" id="accounts-content">
-                <div class="loading-small">Loading accounts...</div>
+                <div class="accounts-controls">
+                    <div class="accounts-controls-row">
+                        <label>Period:</label>
+                        <input type="date" id="balance-start-date" />
+                        <span>to</span>
+                        <input type="date" id="balance-end-date" />
+                        <div class="quick-select">
+                            <button onclick="setBalancePeriod('ytd')" id="btn-ytd">YTD</button>
+                            <button onclick="setBalancePeriod('prev-month')" id="btn-prev-month">Previous Month</button>
+                            <button onclick="setBalancePeriod('prev-fy')" id="btn-prev-fy">Previous FY</button>
+                            <button onclick="setBalancePeriod('custom')" id="btn-custom" class="active">Custom</button>
+                        </div>
+                    </div>
+                    <div class="accounts-controls-row">
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="hide-zero-balances" onchange="loadAccountsWithBalances()" />
+                            Hide zero balances
+                        </label>
+                        <button class="btn-create" onclick="loadAccountsWithBalances()" style="margin-left: auto;">Refresh</button>
+                    </div>
+                </div>
+                <div class="accounts-summary" id="accounts-summary" style="display: none;"></div>
+                <div class="loading-small" id="accounts-loading">Click Refresh to load account balances</div>
             </div>
         </div>
 
@@ -1064,78 +1208,221 @@
             const section = document.getElementById('accounts-section');
             section.classList.toggle('collapsed');
             
-            // Load accounts if not already loaded
-            const content = document.getElementById('accounts-content');
-            if (!section.classList.contains('collapsed') && content.innerHTML.includes('Loading')) {
-                // Set default date to today
-                const dateInput = document.getElementById('balance-date');
-                if (dateInput && !dateInput.value) {
-                    dateInput.value = new Date().toISOString().split('T')[0];
-                }
+            // Initialize default dates if not already set
+            if (!section.classList.contains('collapsed')) {
+                initializeBalanceDates();
+            }
+        }
+
+        // Initialize balance date inputs with default values (start of year to today)
+        function initializeBalanceDates() {
+            const startInput = document.getElementById('balance-start-date');
+            const endInput = document.getElementById('balance-end-date');
+            
+            if (startInput && !startInput.value) {
+                const today = new Date();
+                const startOfYear = new Date(today.getFullYear(), 0, 1);
+                startInput.value = startOfYear.toISOString().split('T')[0];
+            }
+            
+            if (endInput && !endInput.value) {
+                endInput.value = new Date().toISOString().split('T')[0];
+            }
+        }
+
+        // Set balance period based on quick select
+        function setBalancePeriod(period) {
+            const startInput = document.getElementById('balance-start-date');
+            const endInput = document.getElementById('balance-end-date');
+            const today = new Date();
+            
+            // Update button states
+            document.querySelectorAll('.accounts-controls .quick-select button').forEach(btn => {
+                btn.classList.remove('active');
+            });
+            document.getElementById(`btn-${period}`).classList.add('active');
+            
+            let startDate, endDate;
+            
+            switch(period) {
+                case 'ytd':
+                    startDate = new Date(today.getFullYear(), 0, 1);
+                    endDate = today;
+                    break;
+                case 'prev-month':
+                    startDate = new Date(today.getFullYear(), today.getMonth() - 1, 1);
+                    endDate = new Date(today.getFullYear(), today.getMonth(), 0);
+                    break;
+                case 'prev-fy':
+                    // Assuming FY is calendar year - adjust if needed
+                    startDate = new Date(today.getFullYear() - 1, 0, 1);
+                    endDate = new Date(today.getFullYear() - 1, 11, 31);
+                    break;
+                default:
+                    return; // Custom - don't change dates
+            }
+            
+            startInput.value = startDate.toISOString().split('T')[0];
+            endInput.value = endDate.toISOString().split('T')[0];
+            
+            // Auto-refresh when selecting a preset
+            if (period !== 'custom') {
                 loadAccountsWithBalances();
             }
         }
 
-        // Load account list (balances not available via API)
+        // Format number as currency
+        function formatCurrency(amount) {
+            if (amount === 0) return '0.00';
+            return amount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+        }
+
+        // Toggle dimension rows for an account
+        function toggleDimensions(accountCode) {
+            const rows = document.querySelectorAll(`[data-parent-account="${accountCode}"]`);
+            const button = document.getElementById(`expand-btn-${accountCode}`);
+            rows.forEach(row => {
+                if (row.style.display === 'none') {
+                    row.style.display = 'table-row';
+                    if (button) button.textContent = '▼';
+                } else {
+                    row.style.display = 'none';
+                    if (button) button.textContent = '▶';
+                }
+            });
+        }
+
+        // Load account list with balances from API
         async function loadAccountsWithBalances() {
-            const content = document.getElementById('accounts-content');
+            const loadingEl = document.getElementById('accounts-loading');
+            const summaryEl = document.getElementById('accounts-summary');
+            const contentEl = document.getElementById('accounts-content');
             
-            content.innerHTML = `
-                <div class="loading-small">Loading accounts...</div>
-            `;
+            // Get date range
+            const startDate = document.getElementById('balance-start-date').value;
+            const endDate = document.getElementById('balance-end-date').value;
+            const hideZero = document.getElementById('hide-zero-balances').checked;
+            
+            if (!startDate || !endDate) {
+                loadingEl.textContent = 'Please select start and end dates';
+                loadingEl.style.color = '#e53e3e';
+                return;
+            }
+            
+            loadingEl.style.display = 'block';
+            loadingEl.style.color = '#666';
+            loadingEl.textContent = 'Loading account balances...';
+            summaryEl.style.display = 'none';
             
             try {
-                console.log('Fetching accounts...');
-                const res = await fetch('/api/accounts');
-                console.log('Accounts response status:', res.status);
-                
+                // Fetch all account balances with dimensions
+                const url = `/api/account-balances?startDate=${startDate}&endDate=${endDate}&includeDimensions=true`;
+                const res = await fetch(url);
                 const data = await res.json();
-                console.log('Accounts data:', data);
                 
-                if (!data.success || !data.accounts) {
-                    content.innerHTML = `
-                        <div class="loading-small" style="color: #e53e3e;">
-                            Failed to load accounts: ${data.error || 'Unknown error'}
-                        </div>
-                    `;
+                if (!data.success || !data.balances) {
+                    loadingEl.textContent = `Failed to load balances: ${data.error || 'Unknown error'}`;
+                    loadingEl.style.color = '#e53e3e';
                     return;
                 }
                 
-                const accounts = Array.isArray(data.accounts) ? data.accounts : [];
+                let balances = data.balances;
                 
-                if (accounts.length === 0) {
-                    content.innerHTML = `<div class="loading-small">No accounts found</div>`;
+                // Filter out zero balances if requested (but keep accounts with dimensions that have activity)
+                if (hideZero) {
+                    balances = balances.filter(b => {
+                        if (b.closingBalance !== 0) return true;
+                        // Also keep if any dimension has non-zero balance
+                        if (b.dimensions && b.dimensions.some(d => d.closingBalance !== 0)) return true;
+                        return false;
+                    });
+                }
+                
+                if (balances.length === 0) {
+                    loadingEl.textContent = hideZero ? 'No accounts with non-zero balances found' : 'No accounts found';
                     return;
                 }
                 
-                // Sort by account id
-                accounts.sort((a, b) => String(a.id || '').localeCompare(String(b.id || '')));
+                // Calculate totals
+                const totalClosing = balances.reduce((sum, b) => sum + b.closingBalance, 0);
+                const totalOpening = balances.reduce((sum, b) => sum + b.openingBalance, 0);
+                const totalChange = balances.reduce((sum, b) => sum + b.totalChange, 0);
                 
-                const rowsHtml = accounts.map(acc => {
-                    const code = String(acc.id || '-');
-                    const name = acc.name_est || acc.name_eng || acc.name || '-';
-                    const type = acc.account_type_est || acc.account_type_eng || '';
+                // Count total dimensions
+                const totalDimensions = balances.reduce((sum, b) => sum + (b.dimensions?.length || 0), 0);
+                
+                // Update summary
+                summaryEl.innerHTML = `
+                    <strong>Period:</strong> ${startDate} to ${endDate} | 
+                    <strong>Accounts:</strong> ${balances.length} | 
+                    ${totalDimensions > 0 ? `<strong>Dimensions:</strong> ${totalDimensions} | ` : ''}
+                    <strong>Opening:</strong> €${formatCurrency(totalOpening)} | 
+                    <strong>Closing:</strong> €${formatCurrency(totalClosing)} | 
+                    <strong>Change:</strong> <span style="color: ${totalChange >= 0 ? '#38a169' : '#e53e3e'}">€${formatCurrency(totalChange)}</span>
+                `;
+                summaryEl.style.display = 'block';
+                
+                // Build table rows with dimension support
+                let rowsHtml = '';
+                balances.forEach(acc => {
+                    const code = acc.accountNumber;
+                    const name = acc.accountName;
+                    const opening = formatCurrency(acc.openingBalance);
+                    const closing = formatCurrency(acc.closingBalance);
+                    const change = acc.totalChange;
+                    const changeClass = change > 0 ? 'balance-positive' : change < 0 ? 'balance-negative' : 'balance-zero';
+                    const hasDimensions = acc.dimensions && acc.dimensions.length > 0;
                     
-                    return `
-                        <tr>
-                            <td class="account-code">${code}</td>
-                            <td>${name}</td>
-                            <td style="color: #666; font-size: 13px;">${type}</td>
+                    // Main account row
+                    const hasMultipleDimensions = acc.dimensions && acc.dimensions.length > 1;
+                    rowsHtml += `
+                        <tr class="account-row">
+                            <td class="account-code">
+                                ${hasMultipleDimensions ? `<button id="expand-btn-${code}" class="expand-btn" onclick="toggleDimensions('${code}')" style="background: none; border: none; cursor: pointer; padding: 0 5px; font-size: 10px;">▶</button>` : '<span style="padding: 0 5px;">&nbsp;</span>'}
+                                ${code}
+                            </td>
+                            <td><strong>${name}</strong></td>
+                            <td class="balance-cell">${opening}</td>
+                            <td class="balance-cell ${changeClass}">${change >= 0 ? '+' : ''}${formatCurrency(change)}</td>
+                            <td class="balance-cell ${acc.closingBalance > 0 ? 'balance-positive' : acc.closingBalance < 0 ? 'balance-negative' : 'balance-zero'}">${closing}</td>
                         </tr>
                     `;
-                }).join('');
+                    
+                    // Dimension rows (hidden by default)
+                    if (hasDimensions) {
+                        acc.dimensions.forEach(dim => {
+                            // When hiding zero balances, skip dimensions with zero balance
+                            if (hideZero && dim.closingBalance === 0) return;
+                            
+                            const dimOpening = formatCurrency(dim.openingBalance);
+                            const dimClosing = formatCurrency(dim.closingBalance);
+                            const dimChange = dim.totalChange;
+                            const dimChangeClass = dimChange > 0 ? 'balance-positive' : dimChange < 0 ? 'balance-negative' : 'balance-zero';
+                            
+                            rowsHtml += `
+                                <tr class="dimension-row" data-parent-account="${code}" style="display: none; background: #f8f9fa;">
+                                    <td class="account-code" style="padding-left: 30px; color: #666;">&nbsp;</td>
+                                    <td style="padding-left: 30px; color: #666; font-size: 13px;">${dim.name}</td>
+                                    <td class="balance-cell" style="color: #666;">${dimOpening}</td>
+                                    <td class="balance-cell ${dimChangeClass}" style="color: ${dimChangeClass === 'balance-zero' ? '#999' : ''}">${dimChange >= 0 ? '+' : ''}${formatCurrency(dimChange)}</td>
+                                    <td class="balance-cell ${dim.closingBalance > 0 ? 'balance-positive' : dim.closingBalance < 0 ? 'balance-negative' : 'balance-zero'}">${dimClosing}</td>
+                                </tr>
+                            `;
+                        });
+                    }
+                });
                 
-                content.innerHTML = `
-                    <div style="padding: 10px 20px; background: #fffbeb; border-bottom: 1px solid #fcd34d; color: #92400e; font-size: 13px;">
-                        <strong>Note:</strong> Account balances not available via e-Financials demo API. 
-                        Showing chart of accounts only.
-                    </div>
+                // Replace the content with the table
+                const tableContainer = document.createElement('div');
+                tableContainer.innerHTML = `
                     <table class="accounts-table">
                         <thead>
                             <tr>
-                                <th>Code</th>
+                                <th style="width: 100px;">Code</th>
                                 <th>Name</th>
-                                <th>Type</th>
+                                <th class="balance-cell">Opening</th>
+                                <th class="balance-cell">Change</th>
+                                <th class="balance-cell">Closing</th>
                             </tr>
                         </thead>
                         <tbody>
@@ -1143,13 +1430,20 @@
                         </tbody>
                     </table>
                 `;
+                
+                // Keep the controls and summary, replace only the loading/table part
+                const existingTable = contentEl.querySelector('.accounts-table');
+                if (existingTable) {
+                    existingTable.parentNode.replaceChild(tableContainer.firstElementChild, existingTable);
+                } else {
+                    contentEl.appendChild(tableContainer.firstElementChild);
+                }
+                loadingEl.style.display = 'none';
+                
             } catch (err) {
-                console.error('Failed to load accounts:', err);
-                content.innerHTML = `
-                    <div class="loading-small" style="color: #e53e3e;">
-                        Error: ${err.message}
-                    </div>
-                `;
+                console.error('Failed to load account balances:', err);
+                loadingEl.textContent = `Error: ${err.message}`;
+                loadingEl.style.color = '#e53e3e';
             }
         }
 
