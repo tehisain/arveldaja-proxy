@@ -1,6 +1,8 @@
 import { Router } from 'express';
 import { getPendingChanges, getPendingChangeById, updatePendingChangeStatus, deletePendingChange } from '../db';
 import { executeChange } from '../utils/executor';
+import { invalidateJournalsCache } from './company';
+import { tryAcquire, release } from '../utils/locks';
 
 const router = Router();
 
@@ -32,24 +34,34 @@ router.get('/changes/:id', async (req, res) => {
 
 // Approve a change
 router.post('/changes/:id/approve', async (req, res) => {
+  const lockKey = `change:${req.params.id}`;
+  // Serialize approval of a given change so two concurrent requests can't both
+  // pass the pending-status check and execute the underlying write twice.
+  if (!tryAcquire(lockKey)) {
+    return res.status(409).json({
+      success: false,
+      error: 'Change is already being processed',
+    });
+  }
+
   try {
     const change = await getPendingChangeById(req.params.id);
     if (!change) {
       return res.status(404).json({ success: false, error: 'Change not found' });
     }
-    
+
     if (change.status !== 'pending') {
-      return res.status(400).json({ 
-        success: false, 
-        error: `Change is already ${change.status}` 
+      return res.status(400).json({
+        success: false,
+        error: `Change is already ${change.status}`
       });
     }
-    
+
     const resolvedBy = req.body.resolvedBy || 'system';
-    
+
     // Execute the change
     const result = await executeChange(change);
-    
+
     // Update status
     await updatePendingChangeStatus(
       change.id,
@@ -57,15 +69,18 @@ router.post('/changes/:id/approve', async (req, res) => {
       resolvedBy,
       JSON.stringify(result)
     );
-    
-    res.json({ 
-      success: true, 
+
+    // A write may have created new journals; refresh cached balances next read.
+    invalidateJournalsCache();
+
+    res.json({
+      success: true,
       message: 'Change approved and executed',
       result,
     });
   } catch (error) {
     console.error('Error approving change:', error);
-    
+
     // Update status with error
     await updatePendingChangeStatus(
       req.params.id,
@@ -74,12 +89,14 @@ router.post('/changes/:id/approve', async (req, res) => {
       undefined,
       error instanceof Error ? error.message : 'Unknown error'
     );
-    
-    res.status(500).json({ 
-      success: false, 
+
+    res.status(500).json({
+      success: false,
       error: 'Failed to approve change',
       details: error instanceof Error ? error.message : 'Unknown error',
     });
+  } finally {
+    release(lockKey);
   }
 });
 

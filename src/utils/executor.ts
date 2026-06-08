@@ -2,6 +2,17 @@ import { PendingChange, ApiCredentials } from '../types';
 
 const DEFAULT_BASE_URL = 'https://demo-rmp-api.rik.ee/v1';
 
+// Ensure a resolved request URL stays on the configured API host. `new URL(path, base)`
+// will silently discard the base if `path` contains its own scheme/authority (e.g. an
+// absolute "https://evil.com/..."), which would send the signed auth headers to an
+// arbitrary host. Reject anything that doesn't resolve to the base origin.
+function assertSameOrigin(url: URL, baseUrl: string): void {
+  const baseOrigin = new URL(baseUrl).origin;
+  if (url.origin !== baseOrigin) {
+    throw new Error(`Refusing to forward request to non-allowlisted host: ${url.origin}`);
+  }
+}
+
 export async function executeChange(change: PendingChange): Promise<any> {
   // Get credentials from environment
   const credentials: ApiCredentials = {
@@ -23,6 +34,7 @@ export async function executeChange(change: PendingChange): Promise<any> {
   const pathWithoutV1 = apiPath.replace(/^\/v1\//, '');
   const cleanPath = pathWithoutV1.startsWith('/') ? pathWithoutV1.slice(1) : pathWithoutV1;
   const url = new URL(cleanPath, baseUrl);
+  assertSameOrigin(url, baseUrl);
   Object.entries(change.query).forEach(([key, value]) => {
     if (value) url.searchParams.append(key, value);
   });
@@ -133,6 +145,7 @@ export async function forwardReadRequest(
   const pathWithoutV1 = normalizedPath.replace(/^\/v1\//, '');
   const cleanPath = pathWithoutV1.startsWith('/') ? pathWithoutV1.slice(1) : pathWithoutV1;
   const url = new URL(cleanPath, baseUrl);
+  assertSameOrigin(url, baseUrl);
   Object.entries(query).forEach(([key, value]) => {
     if (value) url.searchParams.append(key, value);
   });

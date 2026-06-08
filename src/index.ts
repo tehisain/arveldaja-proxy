@@ -1,4 +1,5 @@
 import 'dotenv/config';
+import crypto from 'crypto';
 import express from 'express';
 import cors from 'cors';
 import path from 'path';
@@ -12,9 +13,64 @@ import { forwardReadRequest } from './utils/executor';
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Middleware
-app.use(cors());
+// CORS: restrict to an explicit allowlist instead of reflecting any origin.
+// Defaults to the local review UI. A wildcard policy would let any website the
+// user visits issue cross-origin write/approval requests against this server.
+const allowedOrigins = (process.env.ALLOWED_ORIGINS || `http://localhost:${PORT}`)
+  .split(',')
+  .map((o) => o.trim())
+  .filter(Boolean);
+
+app.use(
+  cors({
+    origin(origin, callback) {
+      // Allow non-browser clients (no Origin header) and allowlisted origins only.
+      if (!origin || allowedOrigins.includes(origin)) {
+        return callback(null, true);
+      }
+      return callback(new Error('Not allowed by CORS'));
+    },
+  })
+);
+
 app.use(express.json());
+
+// Optional shared-secret guard for state-changing operations. When PROXY_AUTH_TOKEN
+// is set, every mutating request (POST/PUT/PATCH/DELETE) — including proxy writes,
+// approvals, rejections and deletes — must present the token via either
+// `Authorization: Bearer <token>` or an `X-Proxy-Token` header. Reads stay open.
+// When the env var is unset the guard is disabled (unchanged dev behavior).
+const PROXY_AUTH_TOKEN = process.env.PROXY_AUTH_TOKEN;
+const MUTATING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
+
+function timingSafeEqualStr(a: string, b: string): boolean {
+  const aBuf = Buffer.from(a);
+  const bBuf = Buffer.from(b);
+  if (aBuf.length !== bBuf.length) return false;
+  return crypto.timingSafeEqual(aBuf, bBuf);
+}
+
+app.use((req, res, next) => {
+  if (!PROXY_AUTH_TOKEN) return next();
+  if (!MUTATING_METHODS.has(req.method.toUpperCase())) return next();
+
+  const authHeader = req.headers['authorization'];
+  const bearer =
+    typeof authHeader === 'string' && authHeader.startsWith('Bearer ')
+      ? authHeader.slice('Bearer '.length)
+      : undefined;
+  const provided = bearer || (req.headers['x-proxy-token'] as string | undefined);
+
+  if (provided && timingSafeEqualStr(provided, PROXY_AUTH_TOKEN)) {
+    return next();
+  }
+
+  return res.status(401).json({
+    success: false,
+    error: 'Unauthorized: a valid proxy auth token is required for write operations',
+  });
+});
+
 app.use(express.static('public'));
 
 // API Routes

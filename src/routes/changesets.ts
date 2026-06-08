@@ -11,6 +11,8 @@ import {
   moveChangesToChangeset,
 } from '../db';
 import { executeChange } from '../utils/executor';
+import { invalidateJournalsCache } from './company';
+import { tryAcquire, release } from '../utils/locks';
 
 const router = Router();
 
@@ -74,29 +76,39 @@ router.post('/changesets', async (req, res) => {
 
 // Approve all changes in a changeset
 router.post('/changesets/:id/approve', async (req, res) => {
+  const lockKey = `changeset:${req.params.id}`;
+  // Serialize approval of a given changeset so two concurrent requests can't both
+  // pass the pending-status check and execute the same changes twice.
+  if (!tryAcquire(lockKey)) {
+    return res.status(409).json({
+      success: false,
+      error: 'Changeset is already being processed',
+    });
+  }
+
   try {
     const result = await getChangesetWithChanges(req.params.id);
     if (!result) {
       return res.status(404).json({ success: false, error: 'Changeset not found' });
     }
-    
+
     const { changeset, changes } = result;
-    
+
     if (changeset.status !== 'pending') {
-      return res.status(400).json({ 
-        success: false, 
-        error: `Changeset is already ${changeset.status}` 
+      return res.status(400).json({
+        success: false,
+        error: `Changeset is already ${changeset.status}`
       });
     }
-    
+
     const resolvedBy = req.body.resolvedBy || 'system';
     const results: { changeId: string; success: boolean; error?: string }[] = [];
     let hasErrors = false;
-    
+
     // Execute all pending changes
     for (const change of changes) {
       if (change.status !== 'pending') continue;
-      
+
       try {
         const execResult = await executeChange(change);
         await updatePendingChangeStatus(
@@ -119,24 +131,30 @@ router.post('/changesets/:id/approve', async (req, res) => {
         results.push({ changeId: change.id, success: false, error: errorMsg });
       }
     }
-    
+
     // Update changeset status
     const finalStatus = hasErrors ? 'rejected' : 'approved';
     await updateChangesetStatus(changeset.id, finalStatus, resolvedBy);
-    
-    res.json({ 
-      success: !hasErrors, 
+
+    // A write may have created new journals; drop the cached journal list so
+    // balance views reflect the change immediately.
+    invalidateJournalsCache();
+
+    res.json({
+      success: !hasErrors,
       message: hasErrors ? 'Some changes failed' : 'All changes approved and executed',
       changesetId: changeset.id,
       results,
     });
   } catch (error) {
     console.error('Error approving changeset:', error);
-    res.status(500).json({ 
-      success: false, 
+    res.status(500).json({
+      success: false,
       error: 'Failed to approve changeset',
       details: error instanceof Error ? error.message : 'Unknown error',
     });
+  } finally {
+    release(lockKey);
   }
 });
 
