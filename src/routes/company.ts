@@ -28,14 +28,24 @@ interface BalanceTracker {
 // Helper functions
 const round2 = (n: number): number => Math.round(n * 100) / 100;
 
-async function fetchAllJournals(): Promise<any[]> {
+// Short-lived in-memory cache for the full journal list. A single balance page
+// load can trigger several requests (preset clicks, hide-zero toggle, refresh),
+// each of which would otherwise re-paginate the entire journal history from the
+// upstream API. Journal data only changes when an approved write is executed, so
+// a short TTL is a safe trade-off. A single in-flight promise is shared so
+// concurrent requests don't all fan out a full re-fetch.
+const JOURNALS_CACHE_TTL_MS = 30_000;
+let journalsCache: { data: any[]; expiresAt: number } | null = null;
+let journalsInFlight: Promise<any[]> | null = null;
+
+async function fetchAllJournalsUncached(): Promise<any[]> {
   const allJournals: any[] = [];
   let page = 1;
   let totalPages = 1;
 
   do {
     const response = await forwardReadRequest('GET', '/journals', { page: String(page), per_page: '100' }, {});
-    
+
     if (response && Array.isArray(response.items)) {
       allJournals.push(...response.items);
       totalPages = response.total_pages || 1;
@@ -43,11 +53,37 @@ async function fetchAllJournals(): Promise<any[]> {
       allJournals.push(...response);
       break;
     }
-    
+
     page++;
   } while (page <= totalPages);
 
   return allJournals;
+}
+
+async function fetchAllJournals(): Promise<any[]> {
+  if (journalsCache && journalsCache.expiresAt > Date.now()) {
+    return journalsCache.data;
+  }
+
+  // Coalesce concurrent callers onto a single in-flight fetch.
+  if (!journalsInFlight) {
+    journalsInFlight = fetchAllJournalsUncached()
+      .then((data) => {
+        journalsCache = { data, expiresAt: Date.now() + JOURNALS_CACHE_TTL_MS };
+        return data;
+      })
+      .finally(() => {
+        journalsInFlight = null;
+      });
+  }
+
+  return journalsInFlight;
+}
+
+// Invalidate the journal cache. Call this after a write is executed so freshly
+// approved journals show up immediately instead of waiting for the TTL.
+export function invalidateJournalsCache(): void {
+  journalsCache = null;
 }
 
 async function fetchAccountDimensions(): Promise<Map<string, AccountDimension>> {
@@ -265,9 +301,19 @@ router.get('/account-balances', async (req, res) => {
       ? accountNumbers
       : Array.from(accountMap.keys());
 
-    const start = new Date(String(startDate));
-    const end = new Date(String(endDate));
-    end.setHours(23, 59, 59, 999);
+    // Parse the period boundaries as explicit UTC instants. journal effective_date
+    // values are date-only (YYYY-MM-DD) and parse to UTC midnight, so the period
+    // bounds must use the same basis — otherwise a server in a non-UTC timezone
+    // would bucket boundary-day journals into the wrong period (opening vs change).
+    const start = new Date(`${String(startDate).slice(0, 10)}T00:00:00.000Z`);
+    const end = new Date(`${String(endDate).slice(0, 10)}T23:59:59.999Z`);
+
+    if (isNaN(start.getTime()) || isNaN(end.getTime())) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid startDate or endDate; expected YYYY-MM-DD',
+      });
+    }
 
     // Track balances per account
     const accountBalances = new Map<string, BalanceTracker>();
@@ -281,8 +327,16 @@ router.get('/account-balances', async (req, res) => {
     });
 
     // Process all journals
+    let skippedJournals = 0;
     for (const journal of journals) {
       const journalDate = new Date(journal.effective_date);
+      if (isNaN(journalDate.getTime())) {
+        // A journal with a missing/unparseable effective_date can't be bucketed
+        // into opening vs. period change. Skip it but surface the count so the
+        // omission is visible rather than silently dropped from the totals.
+        skippedJournals++;
+        continue;
+      }
       const postings: Posting[] = journal.postings || [];
 
       for (const posting of postings) {
@@ -336,6 +390,7 @@ router.get('/account-balances', async (req, res) => {
       success: true,
       period: { startDate: String(startDate), endDate: String(endDate) },
       totalJournalsProcessed: journals.length,
+      skippedJournals,
       includeDimensions: shouldIncludeDimensions,
       balances: result,
     });

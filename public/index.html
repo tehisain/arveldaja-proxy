@@ -1083,6 +1083,30 @@
     </div>
 
     <script>
+        // If the server is configured with PROXY_AUTH_TOKEN, write/approval requests
+        // require the token. Store it once (?token=... in the URL, or set
+        // localStorage 'proxyAuthToken') and attach it to all same-origin API calls.
+        (function setupAuthToken() {
+            const urlToken = new URLSearchParams(window.location.search).get('token');
+            if (urlToken) {
+                localStorage.setItem('proxyAuthToken', urlToken);
+            }
+            const token = localStorage.getItem('proxyAuthToken');
+            if (!token) return;
+
+            const nativeFetch = window.fetch.bind(window);
+            window.fetch = (input, init = {}) => {
+                const url = typeof input === 'string' ? input : (input && input.url) || '';
+                const isApiCall = url.startsWith('/api') || url.startsWith('/proxy');
+                if (isApiCall) {
+                    const headers = new Headers(init.headers || (typeof input !== 'string' ? input.headers : undefined) || {});
+                    if (!headers.has('X-Proxy-Token')) headers.set('X-Proxy-Token', token);
+                    init = { ...init, headers };
+                }
+                return nativeFetch(input, init);
+            };
+        })();
+
         let currentChanges = [];
         let currentFilter = 'all';
         let pendingAction = null;
@@ -1277,17 +1301,20 @@
             return amount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
         }
 
-        // Toggle dimension rows for an account
-        function toggleDimensions(accountCode) {
-            const rows = document.querySelectorAll(`[data-parent-account="${accountCode}"]`);
-            const button = document.getElementById(`expand-btn-${accountCode}`);
+        // Toggle dimension rows for an account.
+        // Receives the clicked button element; the account code is read from its
+        // data attribute and CSS.escape'd before being used in a selector so that
+        // account codes containing quotes/special chars can't break out.
+        function toggleDimensions(button) {
+            const accountCode = button.getAttribute('data-account') || '';
+            const rows = document.querySelectorAll(`[data-parent-account="${CSS.escape(accountCode)}"]`);
             rows.forEach(row => {
                 if (row.style.display === 'none') {
                     row.style.display = 'table-row';
-                    if (button) button.textContent = '▼';
+                    button.textContent = '▼';
                 } else {
                     row.style.display = 'none';
-                    if (button) button.textContent = '▶';
+                    button.textContent = '▶';
                 }
             });
         }
@@ -1378,10 +1405,10 @@
                     rowsHtml += `
                         <tr class="account-row">
                             <td class="account-code">
-                                ${hasMultipleDimensions ? `<button id="expand-btn-${code}" class="expand-btn" onclick="toggleDimensions('${code}')" style="background: none; border: none; cursor: pointer; padding: 0 5px; font-size: 10px;">▶</button>` : '<span style="padding: 0 5px;">&nbsp;</span>'}
-                                ${code}
+                                ${hasMultipleDimensions ? `<button class="expand-btn" data-account="${escapeAttr(code)}" onclick="toggleDimensions(this)" style="background: none; border: none; cursor: pointer; padding: 0 5px; font-size: 10px;">▶</button>` : '<span style="padding: 0 5px;">&nbsp;</span>'}
+                                ${escapeHtml(code)}
                             </td>
-                            <td><strong>${name}</strong></td>
+                            <td><strong>${escapeHtml(name)}</strong></td>
                             <td class="balance-cell">${opening}</td>
                             <td class="balance-cell ${changeClass}">${change >= 0 ? '+' : ''}${formatCurrency(change)}</td>
                             <td class="balance-cell ${acc.closingBalance > 0 ? 'balance-positive' : acc.closingBalance < 0 ? 'balance-negative' : 'balance-zero'}">${closing}</td>
@@ -1400,9 +1427,9 @@
                             const dimChangeClass = dimChange > 0 ? 'balance-positive' : dimChange < 0 ? 'balance-negative' : 'balance-zero';
                             
                             rowsHtml += `
-                                <tr class="dimension-row" data-parent-account="${code}" style="display: none; background: #f8f9fa;">
+                                <tr class="dimension-row" data-parent-account="${escapeAttr(code)}" style="display: none; background: #f8f9fa;">
                                     <td class="account-code" style="padding-left: 30px; color: #666;">&nbsp;</td>
-                                    <td style="padding-left: 30px; color: #666; font-size: 13px;">${dim.name}</td>
+                                    <td style="padding-left: 30px; color: #666; font-size: 13px;">${escapeHtml(dim.name)}</td>
                                     <td class="balance-cell" style="color: #666;">${dimOpening}</td>
                                     <td class="balance-cell ${dimChangeClass}" style="color: ${dimChangeClass === 'balance-zero' ? '#999' : ''}">${dimChange >= 0 ? '+' : ''}${formatCurrency(dimChange)}</td>
                                     <td class="balance-cell ${dim.closingBalance > 0 ? 'balance-positive' : dim.closingBalance < 0 ? 'balance-negative' : 'balance-zero'}">${dimClosing}</td>
@@ -1551,6 +1578,19 @@
             const div = document.createElement('div');
             div.textContent = text;
             return div.innerHTML;
+        }
+
+        // Escape a value for use inside a double-quoted HTML attribute.
+        // textContent/innerHTML round-tripping does NOT escape quotes, so use this
+        // for any interpolation into an attribute value.
+        function escapeAttr(text) {
+            if (text === null || text === undefined) return '';
+            return String(text)
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;');
         }
 
         // Approve entire changeset
