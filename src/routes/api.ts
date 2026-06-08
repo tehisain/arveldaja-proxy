@@ -102,22 +102,32 @@ router.post('/changes/:id/approve', async (req, res) => {
 
 // Reject a change
 router.post('/changes/:id/reject', async (req, res) => {
+  const lockKey = `change:${req.params.id}`;
+  // Serialize with approval so a reject can't race an in-flight approve of the
+  // same change and flip its status after the write has already been executed.
+  if (!tryAcquire(lockKey)) {
+    return res.status(409).json({
+      success: false,
+      error: 'Change is already being processed',
+    });
+  }
+
   try {
     const change = await getPendingChangeById(req.params.id);
     if (!change) {
       return res.status(404).json({ success: false, error: 'Change not found' });
     }
-    
+
     if (change.status !== 'pending') {
-      return res.status(400).json({ 
-        success: false, 
-        error: `Change is already ${change.status}` 
+      return res.status(400).json({
+        success: false,
+        error: `Change is already ${change.status}`
       });
     }
-    
+
     const resolvedBy = req.body.resolvedBy || 'system';
     const reason = req.body.reason;
-    
+
     await updatePendingChangeStatus(
       change.id,
       'rejected',
@@ -125,14 +135,16 @@ router.post('/changes/:id/reject', async (req, res) => {
       undefined,
       reason
     );
-    
-    res.json({ 
-      success: true, 
+
+    res.json({
+      success: true,
       message: 'Change rejected',
     });
   } catch (error) {
     console.error('Error rejecting change:', error);
     res.status(500).json({ success: false, error: 'Failed to reject change' });
+  } finally {
+    release(lockKey);
   }
 });
 

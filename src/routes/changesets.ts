@@ -109,6 +109,21 @@ router.post('/changesets/:id/approve', async (req, res) => {
     for (const change of changes) {
       if (change.status !== 'pending') continue;
 
+      // Also hold the per-change lock while executing. The changeset lock alone
+      // does not exclude the single-change approve/reject endpoints, which key on
+      // `change:<id>`; without this a member change could be executed twice (once
+      // here, once via /changes/:id/approve), producing duplicate postings.
+      const changeLock = `change:${change.id}`;
+      if (!tryAcquire(changeLock)) {
+        hasErrors = true;
+        results.push({
+          changeId: change.id,
+          success: false,
+          error: 'Change is already being processed',
+        });
+        continue;
+      }
+
       try {
         const execResult = await executeChange(change);
         await updatePendingChangeStatus(
@@ -129,6 +144,8 @@ router.post('/changesets/:id/approve', async (req, res) => {
           errorMsg
         );
         results.push({ changeId: change.id, success: false, error: errorMsg });
+      } finally {
+        release(changeLock);
       }
     }
 
@@ -160,24 +177,34 @@ router.post('/changesets/:id/approve', async (req, res) => {
 
 // Reject all changes in a changeset
 router.post('/changesets/:id/reject', async (req, res) => {
+  const lockKey = `changeset:${req.params.id}`;
+  // Serialize with approval so a reject can't race an in-flight approve of the
+  // same changeset and flip statuses while changes are being executed.
+  if (!tryAcquire(lockKey)) {
+    return res.status(409).json({
+      success: false,
+      error: 'Changeset is already being processed',
+    });
+  }
+
   try {
     const result = await getChangesetWithChanges(req.params.id);
     if (!result) {
       return res.status(404).json({ success: false, error: 'Changeset not found' });
     }
-    
+
     const { changeset, changes } = result;
-    
+
     if (changeset.status !== 'pending') {
-      return res.status(400).json({ 
-        success: false, 
-        error: `Changeset is already ${changeset.status}` 
+      return res.status(400).json({
+        success: false,
+        error: `Changeset is already ${changeset.status}`
       });
     }
-    
+
     const resolvedBy = req.body.resolvedBy || 'system';
     const reason = req.body.reason;
-    
+
     // Reject all pending changes
     for (const change of changes) {
       if (change.status === 'pending') {
@@ -190,18 +217,20 @@ router.post('/changesets/:id/reject', async (req, res) => {
         );
       }
     }
-    
+
     // Update changeset status
     await updateChangesetStatus(changeset.id, 'rejected', resolvedBy);
-    
-    res.json({ 
-      success: true, 
+
+    res.json({
+      success: true,
       message: 'Changeset rejected',
       changesetId: changeset.id,
     });
   } catch (error) {
     console.error('Error rejecting changeset:', error);
     res.status(500).json({ success: false, error: 'Failed to reject changeset' });
+  } finally {
+    release(lockKey);
   }
 });
 
